@@ -1,61 +1,50 @@
-import argparse
-import json
-import os
-import random
-from copy import deepcopy
-from typing import List, Optional, Union
-
+import os, sys, json, random, argparse
 import pandas as pd
-import torch
+from tqdm import tqdm
 from PIL import Image
 from datasets import load_dataset
-from tqdm import tqdm
-from transformers import AutoConfig, AutoProcessor, AutoTokenizer
 
+from transformers import AutoTokenizer, AutoConfig, AutoProcessor
+
+# Custom models
 from transformers_custom.modeling_llama import LlamaForCausalLMDetect
 from transformers_custom.modeling_minicpmv import MiniCPMV as MiniCPMVForCausalLM
 from transformers_custom.modeling_idefics import Idefics3ForConditionalGeneration
 from transformers_custom.modeling_llava_next import LlavaNextForConditionalGeneration
+try:
+    from transformers_custom.modeling_qwen2 import Qwen2ForCausalLM
+except ImportError:
+    Qwen2ForCausalLM = None
 
 def _downscale_images_preserving_aspect(
     images,
     max_side: int = 1024,
     max_megapixels_per_image: float = 1.0,
     max_total_megapixels: float = 2.0,
-    resample=Image.BICUBIC,
+    resample = Image.BICUBIC
 ):
     """
-    Downscale a list of PIL images while preserving aspect ratio.
-
-    This constrains:
-      - maximum side length per image,
-      - maximum megapixels per image,
-      - total megapixels across all images in one sample.
+    Downscale PIL images while preserving aspect ratio.
+    Limits: max side per image, max megapixels per image, max total megapixels.
     """
     def _shrink_to(image: Image.Image, target_mp: float, max_side_px: int) -> Image.Image:
         w, h = image.size
-        # First by max side
         scale_side = min(1.0, max_side_px / max(w, h)) if max(w, h) > max_side_px else 1.0
-        # Then by MP limit
         cur_mp = (w * h) / 1_000_000.0
         scale_mp = (target_mp / cur_mp) ** 0.5 if cur_mp > target_mp else 1.0
         scale = min(scale_side, scale_mp)
         if scale < 1.0:
             nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
             image = image.resize((nw, nh), resample=resample)
-        # Convert to RGB, drop alpha/EXIF to save memory
         if image.mode != "RGB":
             image = image.convert("RGB")
         return image
 
-    # First apply per-image constraints.
-    imgs = [_shrink_to(im, max_megapixels_per_image, max_side) for im in images]
+    imgs = [ _shrink_to(im, max_megapixels_per_image, max_side) for im in images ]
 
-    # Then enforce a global constraint across all images if needed.
     total_pixels = sum(im.size[0] * im.size[1] for im in imgs)
     total_mp = total_pixels / 1_000_000.0
     if total_mp > max_total_megapixels and total_pixels > 0:
-        # Uniformly downscale again with a sqrt-based ratio.
         scale = (max_total_megapixels / total_mp) ** 0.5
         new_imgs = []
         for im in imgs:
@@ -70,23 +59,20 @@ def _downscale_images_preserving_aspect(
 
     return imgs
 
+# =========================
+# Data loading (multimodal)
+# =========================
 def load_lines_from_dataset(task, lang, args):
     """
     Load dataset lines or (image(s), text) samples.
     Supports:
-      - 'multimodal'   -> Parquet with columns: problem, answer (optional), images (list of paths or base64)
-      - 'gsm'          -> mgsm_en.tsv
-
-    Returns a unified sample structure:
-      - Text task: str (prompt text)
-      - Multimodal task: dict { "images": List[str|PIL|bytes], "prompt": str, "answer": Optional[str] }
+      - 'multimodal' -> Parquet with problem, answer (optional), images (paths or base64)
+      - 'gsm' -> llama3ds_math.tsv
+    Returns unified sample structure.
     """
     if task == "multimodal":
         if not getattr(args, "multimodal_file", None):
-            raise ValueError(
-                "Please provide --multimodal_file pointing to a Parquet file "
-                "containing 'problem', 'answer', and 'images' columns."
-            )
+            raise ValueError("Provide --multimodal_file pointing to Parquet with problem, answer, images columns.")
         df = pd.read_parquet(args.multimodal_file)
 
         instruction_following = (
@@ -108,8 +94,10 @@ def load_lines_from_dataset(task, lang, args):
         if lang != "en":
             raise ValueError("Only English ('en') GSM data is supported.")
         file_path = f"{args.corpus_path}/llama3ds_math.tsv"
-        df = pd.read_csv(file_path, sep="\t", names=["question", "answer"])
-        return [f"Question: {q}\nAnswer:" for q in df["question"]]
+        df = pd.read_csv(file_path, sep='\t', names=["question", "answer"])
+        return [
+            f"Question: {q}\nAnswer:" for q in df["question"]
+        ]
 
     else:
         raise ValueError(f"Unsupported task: {task}")
@@ -118,27 +106,11 @@ def load_lines_from_dataset(task, lang, args):
 # =========================
 # Inference (unified via generate)
 # =========================
-# def _ensure_pils(images):
-#     pil_list = []
-#     for im in images:
-#         if isinstance(im, Image.Image):
-#             pil_list.append(im)
-#         elif isinstance(im, (bytes, bytearray)):
-#             from io import BytesIO
-#             pil_list.append(Image.open(BytesIO(im)).convert("RGB"))
-#         elif isinstance(im, str):
-#             if os.path.exists(im):
-#                 pil_list.append(Image.open(im).convert("RGB"))
-#             else:
-#                 raise ValueError(f"Invalid image path: {im}")
-#         else:
-#             raise TypeError(f"Unsupported image type: {type(im)}")
-#     return pil_list
+from copy import deepcopy
+
+
 def _is_minicpm(model_name: str, tokenizer=None, processor=None) -> bool:
-    """
-    Heuristically check whether the model belongs to the MiniCPM family
-    based on the model name, tokenizer, or processor hints.
-    """
+    """Check if model is MiniCPM family."""
     name_l = (model_name or "").lower()
     if "minicpm" in name_l:
         return True
@@ -157,16 +129,22 @@ def _is_minicpm(model_name: str, tokenizer=None, processor=None) -> bool:
     return False
 
 
+from copy import deepcopy
+from typing import List, Optional, Union
+from PIL import Image
+import torch
+
+
 def _move_to_device(x, device):
-    """Recursively move tensors in a batch to the given device."""
+    """Recursively move tensors in batch to device; other types unchanged."""
     if torch.is_tensor(x):
         return x.to(device)
     if isinstance(x, dict):
         return {k: _move_to_device(v, device) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
         t = [_move_to_device(v, device) for v in x]
-        return type(x)(t)  # Preserve list/tuple type
-    return x  # int/float/str/None/tuple-of-ints etc. return as-is
+        return type(x)(t)
+    return x
 
 
 def _build_minicpm_inputs(
@@ -177,7 +155,6 @@ def _build_minicpm_inputs(
         max_inp_length: int = 2048,
         system_prompt: Optional[str] = None,
 ):
-    # 1) Normalize images -> List[Image.Image]
     if images is None:
         img_list: List[Image.Image] = []
     elif isinstance(images, Image.Image):
@@ -185,12 +162,10 @@ def _build_minicpm_inputs(
     else:
         img_list = list(images)
 
-    # 2) Build the message list: the first user message contains [images..., text].
     msgs = [{"role": "user", "content": img_list + [user_text]}]
     if system_prompt:
         msgs = [{"role": "system", "content": system_prompt}] + msgs
 
-    # 3) Copy and replace Image objects with placeholders, collecting real images_out.
     copy_msgs = deepcopy(msgs)
     images_out: List[Image.Image] = []
     for i, msg in enumerate(copy_msgs):
@@ -205,17 +180,14 @@ def _build_minicpm_inputs(
                 images_out.append(c)
                 cur_parts.append("(<image>./</image>)")
             elif isinstance(c, str):
-                # Avoid duplicate placeholders inside user text.
                 s = c.replace("(<image>./</image>)", "").replace("<image>", "")
                 cur_parts.append(s)
         msg["content"] = "\n".join(cur_parts)
 
-    # 4) Build the textual prompt.
     prompt = processor.tokenizer.apply_chat_template(
         copy_msgs, tokenize=False, add_generation_prompt=True
     )
 
-    # 5) Pack model inputs; note that images are passed separately.
     inputs = processor(
         prompt,
         images_out,
@@ -223,8 +195,6 @@ def _build_minicpm_inputs(
         max_length=max_inp_length,
     ).to(device)
 
-    # 6) Recursively move to device
-    # inputs = _move_to_device(inputs, device)
     return inputs
 
 
@@ -232,25 +202,13 @@ def detection_prompting(model, tokenizer, processor, sample,
                         candidate_premature_layers, atten_ratio=0.1, ffn_ratio=0.1, model_name=''):
     """
     Run one detection prompt, supporting both text-only and multimodal inputs.
-
-    Returns
-    -------
-    hidden_states : dict
-        Per-layer hidden states as returned by the model.
-    answer : str
-        Decoded model answer.
-    activate : dict
-        Activation statistics for selected neuron groups.
-    o_layers : Any
-        Additional per-layer outputs from the model.
+    Returns: hidden_states, generated answer, activate, o_layers
     """
     cut_off_len = 256
     device = next(model.parameters()).device
     kwargs = {}
 
-    # === Multimodal samples ===
     if isinstance(sample, dict) and "images" in sample and "prompt" in sample:
-        # ---- 1) Normalize to PIL images ----
         def _ensure_pils(images):
             import base64, os
             from io import BytesIO
@@ -287,7 +245,7 @@ def detection_prompting(model, tokenizer, processor, sample,
                 try:
                     return [_open_bytes(_b64_to_bytes(s))]
                 except Exception:
-                    raise ValueError(f"Invalid image string (not path/url/base64): {s[:80]}...")
+                    raise ValueError(f"Invalid image string: {s[:80]}...")
 
             def _np_to_pils(a):
                 if np is None:
@@ -363,7 +321,7 @@ def detection_prompting(model, tokenizer, processor, sample,
             for img in images:
                 if isinstance(img, Image.Image):
                     w, h = img.size
-                    scale = min(max_size / w, max_size / h, 1.0)  # Downscale only
+                    scale = min(max_size / w, max_size / h, 1.0)
                     new_w, new_h = int(w * scale), int(h * scale)
                     img = img.resize((new_w, new_h), Image.LANCZOS)
                 processed.append(img)
@@ -377,15 +335,12 @@ def detection_prompting(model, tokenizer, processor, sample,
                 max_total_megapixels=2.0,
             )
         else:
-            # Other VLMs (MiniCPM, Idefics3 etc.) also benefit from a light downsampling.
             images = _downscale_images_preserving_aspect(
                 images,
                 max_side=64,
                 max_megapixels_per_image=1.5,
                 max_total_megapixels=3.0,
             )
-
-        # After downsampling images
 
         model_dtype = getattr(getattr(model, "dtype", None), "type", None)
         model_dtype = getattr(model, "dtype", torch.float16)
@@ -396,13 +351,13 @@ def detection_prompting(model, tokenizer, processor, sample,
                 images=images,
                 user_text=text,
                 device=device,
-                max_inp_length=max(768, cut_off_len),
+                max_inp_length=max(768, cut_off_len)
             )
         else:
             try:
                 proc_inputs = processor(
                     text=[text],
-                    images=[images],  # Outer wrap for batch=1
+                    images=[images],
                     return_tensors="pt",
                     padding=False,
                 )
@@ -421,15 +376,16 @@ def detection_prompting(model, tokenizer, processor, sample,
                         if v.is_floating_point():
                             out[k] = v.to(device=device, dtype=model_dtype, non_blocking=True)
                         else:
-                            out[k] = v.to(device=device, non_blocking=True)  # e.g., input_ids (long)
+                            out[k] = v.to(device=device, non_blocking=True)
                     else:
                         out[k] = v
                 return out
 
             proc_inputs = _cast_and_move_to_device(proc_inputs, device, model_dtype=model_dtype)
-            kwargs.update(proc_inputs)
+            for k, v in proc_inputs.items():
+                kwargs[k] = v
 
-    # === Text-only samples ===
+
     elif isinstance(sample, str):
         inputs = tokenizer(sample, return_tensors="pt", truncation=True, max_length=cut_off_len)
         kwargs['input_ids'] = inputs.input_ids[:, :cut_off_len].to(device)
@@ -453,11 +409,9 @@ def detection_prompting(model, tokenizer, processor, sample,
 
     with torch.inference_mode():
         if _is_minicpm(model_name, tokenizer, processor):
-            # MiniCPM needs pre-built inputs to avoid internal reconstruction
             try:
                 hidden_states, outputs, activate, o_layers = model.generate(model_inputs=inputs, tokenizer=tokenizer,**gen_kwargs)
             except TypeError:
-                # Fallback when model_inputs not available
                 gen_kwargs.update(inputs)
                 hidden_states, outputs, activate, o_layers = model.generate(**gen_kwargs)
         else:
@@ -487,25 +441,19 @@ def detect_key_neurons(model, tokenizer, processor, lang,
                        atten_ratio=0.1, ffn_ratio=0.1, test_size=-1, candidate_layers=[],
                        detection_path="./test_data/oscar", output_path="./output",
                        suffix="", model_name="", sample_size=10000, task="detect", args=None) -> dict:
-    """
-    Detects neurons key to the language *lang* and writes results.
-    """
+    """Detect neurons key to the given language and write results."""
     try:
-        # Generic LLM (num_hidden_layers at top level)
         candidate_layers = model.config.num_hidden_layers
     except AttributeError:
         try:
-            # Some models wrap in llm_config
-            candidate_layers = model.config.llm_config.num_hidden_layers  # type: ignore
+            candidate_layers = model.config.llm_config.num_hidden_layers
         except AttributeError:
             try:
-                # Idefics3 / LLaVA etc. multimodal -> in text_config
-                candidate_layers = model.config.text_config.num_hidden_layers  # type: ignore
+                candidate_layers = model.config.text_config.num_hidden_layers
             except AttributeError:
                 print(model.config)
                 candidate_layers = None
     candidate_layers = range(int(candidate_layers))
-    # Load samples from data loader
     lines = load_lines_from_dataset(task, lang, args)
     if sample_size > 0 and sample_size < len(lines):
         lines = random.sample(lines, sample_size)
@@ -520,7 +468,6 @@ def detect_key_neurons(model, tokenizer, processor, lang,
     print("Detection corpus size: ", len(lines))
     count = 0
     for sample in tqdm(lines):
-        # try:
         hidden, answer, activate, o_layers = detection_prompting(
             model, tokenizer, processor, sample, candidate_layers,
             atten_ratio=atten_ratio, ffn_ratio=ffn_ratio, model_name=model_name
@@ -529,14 +476,9 @@ def detect_key_neurons(model, tokenizer, processor, lang,
             activate_key_sets[key].append(activate[key])
         count += 1
         intermediate_layers_decode[count] = hidden
-        # except Exception as e:
-        #     error_count += 1
-        #     count += 1
-        #     print(f"[Error #{error_count}] {e}")
 
     print("Detection query complete; error: ", error_count)
 
-    # Compute intersection
     for group in activate_key_sets.keys():
         entries = activate_key_sets[group]
         if not entries:
@@ -551,7 +493,6 @@ def detect_key_neurons(model, tokenizer, processor, lang,
         activate_key_sets[group] = common_layers
         print(f"{group} integrated and logged")
 
-    # File naming logic
     if "huggingface" in model_name:
         train_on_lang = "base_model"
         file_name_prefix = model_name.split('/')[-1]
@@ -578,37 +519,47 @@ def detection_all(model_name, lang, atten_ratio=0.1, ffn_ratio=0.1, test_size=-1
     config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-    # ============ Model selection ============
     name_l = model_name.lower()
     if "gemma-3" in name_l:
+        from transformers_custom.modeling_gemma3 import Gemma3ForConditionalGeneration
         model = Gemma3ForConditionalGeneration.from_pretrained(model_name, config=config, device_map="auto")
         model = model.language_model
     elif "llama" in name_l and "idefics" not in name_l and "minicpm" not in name_l and 'llava' not in name_l:
         import torch
         model = LlamaForCausalLMDetect.from_pretrained(model_name, config=config, device_map="auto")
     elif "gemma-2" in name_l:
+        from transformers_custom.modeling_gemma2 import Gemma2ForCausalLM
         model = Gemma2ForCausalLM.from_pretrained(model_name, config=config, device_map="auto")
     elif "qwen3" in name_l:
+        from transformers_custom.modeling_qwen3 import Qwen3ForCausalLM
         model = Qwen3ForCausalLM.from_pretrained(model_name, config=config, device_map="auto")
-    elif "qwen" in name_l:
+    elif "qwen" in name_l and "vl" in name_l:
+        from transformers_custom.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+        import torch
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_name, config=config, device_map="auto", torch_dtype=torch.float16)
+    elif "qwen" in name_l and Qwen2ForCausalLM is not None:
         model = Qwen2ForCausalLM.from_pretrained(model_name, config=config, device_map="auto")
     elif "gemma" in name_l:
+        from transformers_custom.modeling_gemma import GemmaForCausalLM
         model = GemmaForCausalLM.from_pretrained(model_name, config=config, device_map="auto")
 
-    # === NEW: MiniCPM-V ===
     elif "minicpm" in name_l or "minicpm-v" in name_l:
         import torch
-        model = MiniCPMVForCausalLM.from_pretrained(model_name, config=config, device_map="cuda:0",torch_dtype=torch.float16)  # NEW
+        model = MiniCPMVForCausalLM.from_pretrained(model_name, config=config, device_map="cuda:0",torch_dtype=torch.float16)
 
-    # === NEW: Idefics3 ===
     elif "idefics3" in name_l or "idefics-3" in name_l:
         import torch
-        model = Idefics3ForConditionalGeneration.from_pretrained(model_name, config=config, device_map="auto",torch_dtype=torch.float16) # NEW
+        model = Idefics3ForConditionalGeneration.from_pretrained(model_name, config=config, device_map="auto",torch_dtype=torch.float16)
 
     elif "llava" in name_l:
         import torch
         model = LlavaNextForConditionalGeneration.from_pretrained(model_name, config=config, device_map="auto",
-                                                                  torch_dtype=torch.float16)  # NEW , device_map="auto"
+                                                                  torch_dtype=torch.float16)
+
+    elif "internvl" in name_l:
+        from transformers_custom.modeling_internvl_chat import InternVLChatModel
+        import torch
+        model = InternVLChatModel.from_pretrained(model_name, config=config, device_map="auto", torch_dtype=torch.float16)
 
     else:
         raise ValueError(f"Model {model_name} not supported")
@@ -621,18 +572,16 @@ def detection_all(model_name, lang, atten_ratio=0.1, ffn_ratio=0.1, test_size=-1
             test_size=test_size, detection_path=detection_path, output_path=output_path,
             suffix=suffix, model_name=model_name, sample_size=sample_size, task=task, args=args
         )
-        # Adjust for safe access to neurons['attn_q'][0]:
         attn_q_layers = neurons.get("attn_q", {})
         print(l, "complete", len(attn_q_layers.keys()))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # Training / Detection args
     parser.add_argument("--corpus_path", type=str, default='./')
     parser.add_argument("--corpus_size", type=int, default=-1)
     parser.add_argument("--base", type=str,
-                        default="openbmb/MiniCPM-Llama3-V-2_5")  # openbmb/MiniCPM-Llama3-V-2_5MergeBench/Llama-3.1-8B_math HuggingFaceM4/Idefics3-8B-Llama3  llava-hf/llama3-llava-next-8b-hf
+                        default="openbmb/MiniCPM-Llama3-V-2_5")
     parser.add_argument("--output_path", type=str, default="./neuron_train_data_detect_with_prediction/")
     parser.add_argument("--sample_size", type=int, default=100)
     parser.add_argument("--lang", type=str, default="en")
@@ -640,8 +589,7 @@ if __name__ == "__main__":
     parser.add_argument("--ffn_ratio", type=float, default=0.2)
     parser.add_argument("--suffix", type=str, default="")
     parser.add_argument("--task", type=str, default="multimodal")
-    # Multimodal data file (parquet)
-    parser.add_argument("--multimodal_file", type=str, default='minicpm_vl_math.parquet')  # NEW
+    parser.add_argument("--multimodal_file", type=str, default='minicpm_vl_math.parquet')
 
     args = parser.parse_args()
 

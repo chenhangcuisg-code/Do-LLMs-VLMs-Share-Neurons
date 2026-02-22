@@ -136,21 +136,34 @@ The merged model is saved with `save_pretrained` under `--output_dir`.
 
 ### Run All Experiments
 
-A script `run_all_merge_experiments.sh` (or `run_all_merge_experiments.ps1` on Windows) runs merge experiments with fixed parameters per model type:
+A script `run_all_merge_experiments.sh` (or `run_all_merge_experiments.ps1` on Windows) runs the **full pipeline**: neuron detection → compute shared neurons → merge.
 
-| Model | lora_rank | lora_beta |
-|-------|-----------|-----------|
-| Idefics3 | 4 | 0.5 |
-| InternVL 3B | 32 | 0.5 |
-| LLaVA Next | 4 | 0.5 |
-| QwenVL 7B | 4 | 0.5 |
-| QwenVL 3B | 4 | 0.5 |
-| MiniCPM-V | 4 | 0.5 |
+| Model | lora_rank | lora_beta | atten_ratio | ffn_ratio |
+|-------|-----------|-----------|-------------|-----------|
+| Idefics3 | 4 | 0.5 | 0.3 | 0.3 |
+| InternVL 3B | 32 | 0.5 | 0.3 | 0.3 |
+| LLaVA Next | 4 | 0.5 | 0.3 | 0.3 |
+| QwenVL 7B | 4 | 0.5 | 0.1 | 0.1 |
+| QwenVL 3B | 4 | 0.5 | 0.1 | 0.1 |
+| MiniCPM-V | 4 | 0.5 | 0.3 | 0.3 |
 
-Set `JSON_BASE` to the directory containing your neuron detection outputs (with `shared_VL_reasoning.json` files). Set `OUTPUT_BASE` for merged model output.
+**Environment variables:**
+- `DETECT_SCRIPT`: path to `detect_mm_add_new.py` (default: same directory as script)
+- `NEURON_BASE`: output dir for detection JSONs and `compare_*/shared_VL_reasoning.json`
+- `OUTPUT_BASE`: output dir for merged models
+- `CORPUS_PATH`: directory containing `llama3ds_math.tsv` (for GSM detection)
+- `MULTIMODAL_FILE`: parquet path for multimodal detection (default: `minicpm_vl_math.parquet`)
+- `SAMPLE_SIZE`: samples per detection (default: 100)
+- `SKIP_DETECT=1`: skip detection, run only merge (requires existing JSONs)
 
 ```bash
-JSON_BASE=/path/to/neuron_outputs OUTPUT_BASE=./merged_models bash run_all_merge_experiments.sh
+CORPUS_PATH=/path/to/corpus MULTIMODAL_FILE=geometry3k.parquet bash run_all_merge_experiments.sh
+```
+
+To skip detection and run only merge (when JSONs already exist):
+
+```bash
+SKIP_DETECT=1 NEURON_BASE=/path/to/neuron_outputs bash run_all_merge_experiments.sh
 ```
 
 ## 3. Batched Inference (`inference_mm_new_model.py`)
