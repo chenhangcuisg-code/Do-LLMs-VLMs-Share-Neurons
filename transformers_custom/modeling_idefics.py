@@ -43,7 +43,7 @@ from transformers import AutoConfig, AutoModel
 from transformers.models.auto.modeling_auto import MODEL_MAPPING
 from .modeling_llama import LlamaModel as CustomLlamaModel
 
-# 注册你自己的模型
+# Register your custom model
 # MODEL_MAPPING.register(
 #     AutoConfig.for_model("llama"),
 #     CustomLlamaModel
@@ -616,7 +616,7 @@ class Idefics3Model(Idefics3PreTrainedModel):
         self.connector = Idefics3Connector(config)
         from .modeling_llama import LlamaModel as CustomLlamaModel
 
-        # 如果只是初始化
+        # If only initializing
         self.text_model = CustomLlamaModel(config.text_config).to(torch.float16)
         self.image_seq_len = int(
             ((config.vision_config.image_size // config.vision_config.patch_size) ** 2) / (config.scale_factor**2)
@@ -1104,19 +1104,19 @@ class Idefics3ForConditionalGeneration(Idefics3PreTrainedModel, GenerationMixinC
                 return np.where(a >= thr)[0]
 
             for early_layer in early_exit_layers:
-                # 2) 该层的 per-layer logits（若未保留 hidden_states，回退到最后一层）
+                # 2) Per-layer logits for this layer（若未保留 hidden_states，回退到最后一层）
                 if outputs.hidden_states is None or early_layer >= len(outputs.hidden_states):
                     layer_h = outputs.last_hidden_state
                 else:
                     layer_h = outputs.hidden_states[early_layer]
                 logits_dict[early_layer] = self.lm_head(layer_h)
 
-                # 3) 计算每类激活的 Top-N 数目（保持与你示例一致的来源）
+                # 3) Compute Top-N counts per activation type（保持与你示例一致的来源）
                 top_number_attn = int(top_ratio_atten * len(hidden_scores_fwd_up[early_layer]))
                 top_number_ffn = int(top_ratio_ffn * len(hidden_scores_q[early_layer]))
-                top_number_layer = 10  # 用于 no_use_layer_index 的层数上限
+                top_number_layer = 10  # Layer limit for no_use_layer_index 的层数上限
 
-                # 4) 各字典取 Top-N 索引（降序）
+                # 4) Take Top-N indices from each dict（降序）
                 activate_keys_fwd_up[early_layer] = _topn(hidden_scores_fwd_up[early_layer], top_number_ffn)
                 activate_keys_fwd_down[early_layer] = _topn(hidden_scores_fwd_down[early_layer], top_number_ffn)
                 activate_keys_q[early_layer] = _topn(hidden_scores_q[early_layer], top_number_attn)
@@ -1124,7 +1124,7 @@ class Idefics3ForConditionalGeneration(Idefics3PreTrainedModel, GenerationMixinC
                 activate_keys_v[early_layer] = _topn(hidden_scores_v[early_layer], top_number_attn)
                 activate_keys_o[early_layer] = _topn(hidden_scores_o[early_layer], top_number_attn)
 
-            # 5) 选出 no_use_layer_index（与示例相同：按 combined_data 升序排序后取最后 N 个）
+            # 5) Select no_use_layer_index（与示例相同：按 combined_data 升序排序后取最后 N 个）
             sorted_items = sorted(combined_data.items(), key=lambda item: item[1])
             no_use_layer_index = [item[0] for item in sorted_items[-top_number_layer:]]
 

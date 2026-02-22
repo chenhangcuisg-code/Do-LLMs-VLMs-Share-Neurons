@@ -17,7 +17,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.utils import ModelOutput, logging
 
-# 自己的模型
+# Custom model
 from transformers_custom.configuration_internvl_chat import InternVLChatConfig
 from transformers_custom.conversation import get_conv_template
 from transformers_custom.modeling_intern_vit import InternVisionModel, has_flash_attn

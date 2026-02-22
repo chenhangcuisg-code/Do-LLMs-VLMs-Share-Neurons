@@ -3478,19 +3478,19 @@ class GenerationMixinCustom:
                 next_tokens = next_tokens * unfinished_sequences + pad_token_id * (1 - unfinished_sequences)
 
             # update generated ids, model inputs, and length for next step
-            # 修改后
-            # 统一 next_tokens 形状为 [batch, 1]
+            # Modified
+            # Unify next_tokens shape to [batch, 1]
             # print('####')
             # print(next_tokens)
             # print('####')
-            # 统一 next_tokens 形状为 [batch, 1]
+            # Unify next_tokens shape to [batch, 1]
             if next_tokens.dim() == 1:  # [batch]
                 next_tokens = next_tokens.unsqueeze(-1)  # -> [batch, 1]
             elif next_tokens.dim() == 2:  # [batch, seq_len]
                 if next_tokens.size(1) == 1:
-                    pass  # 已经是 [batch, 1]
+                    pass  # Already [batch, 1]
                 else:
-                    # 取最后一个 token，保证兼容 seq_len>1
+                    # Take last token for seq_len>1 compatibility
                     next_tokens = next_tokens[:, -1:].contiguous()  # -> [batch, 1]
             elif next_tokens.dim() == 3 and next_tokens.size(1) == 1:  # [batch, 1, ?]
                 next_tokens = next_tokens.squeeze(1)  # -> [batch, ?]
@@ -3499,7 +3499,7 @@ class GenerationMixinCustom:
             else:
                 raise ValueError(f"Unexpected next_tokens shape: {next_tokens.shape}")
 
-            # 统一之后拼接
+            # Concat after unification
             input_ids = torch.cat([input_ids, next_tokens], dim=-1)
             if streamer is not None:
                 streamer.put(next_tokens.cpu())

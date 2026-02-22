@@ -1069,7 +1069,7 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #         if k is None or k <= 0 or n == 0:
     #             return np.array([], dtype=np.int64)
     #         k = min(k, n)
-    #         # argsort + 取末尾 k 个再倒序
+    #         # argsort + take last k and reverse
     #         idx = np.argsort(vec_1d)[-k:][::-1]
     #         return idx.astype(np.int64)
     #
@@ -1117,7 +1117,7 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #     activate_keys_o = {}
     #     no_use_layer_index = []
     #     if early_exit_layers is not None:
-    #         # ---- 把每层分数统一转成 2D: (B, N)；不再压掉 batch 维 ----
+    #         # Unify layer scores to 2D: (B, N), keep batch dim ----
     #         def _to_numpy_bn(x):
     #             import numpy as _np
     #             if isinstance(x, torch.Tensor):
@@ -1142,12 +1142,12 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #                     return _np.zeros((0, 0), dtype=_np.float32)
     #                 arr = _np.stack(elems, axis=0) if _np.asarray(elems[0]).ndim == 1 else _np.asarray(elems)
     #             else:
-    #                 # 标量兜底 -> (1,1)
+    #                 # Scalar fallback -> (1,1)
     #                 return _np.asarray([[float(x)]], dtype=_np.float32)
     #
     #             if arr.ndim == 1:  # (N,) -> (1,N)
     #                 arr = arr[None, :]
-    #             elif arr.ndim > 2:  # 罕见：拍平到 (B, N)
+    #             elif arr.ndim > 2:  # Rare: flatten to (B, N)
     #                 B = arr.shape[0]
     #                 arr = arr.reshape(B, -1)
     #             return arr  # (B, N)
@@ -1159,7 +1159,7 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #         vec_v_bn = {k: _to_numpy_bn(v) for k, v in hidden_scores_v.items()}
     #         vec_o_bn = {k: _to_numpy_bn(v) for k, v in hidden_scores_o.items()}
     #
-    #         # ---- 用“总分”只做挑层（允许跨 batch 聚合）；不影响逐样本 topk ----
+    #         # Use total score for layer selection (cross-batch); per-sample topk ----
     #         summed_data_fwd = {key: float(vec_fwd_up_bn[key].sum()) for key in vec_fwd_up_bn}
     #         summed_data_q = {key: float(vec_q_bn[key].sum()) for key in vec_q_bn}
     #         summed_data_v = {key: float(vec_v_bn[key].sum()) for key in vec_v_bn}
@@ -1171,7 +1171,7 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #             for key in summed_data_fwd.keys()
     #         }
     #
-    #         # ---- 小工具：对 (B,N) 逐样本取 topk -> (B,K) 的 int64 索引 ----
+    #         # Utility: per-sample topk for (B,N) -> (B,K) int64 indices ----
     #         def _topk_per_batch(scores_bn: np.ndarray, k: int) -> np.ndarray:
     #             import numpy as _np
     #             B, N = scores_bn.shape if scores_bn.ndim == 2 else (scores_bn.shape[0], 0)
@@ -1184,7 +1184,7 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
     #                 out.append(idx.astype(_np.int64))
     #             return _np.stack(out, axis=0)  # (B, K)
     #
-    #         # ---- 为每个 early-exit 层挑“逐样本”的索引；返回带 batch 维 ----
+    #         # For each early-exit layer select“逐样本”的索引；返回带 batch 维 ----
     #         for i, early_exit_layer in enumerate(early_exit_layers):
     #             logits = self.lm_head(outputs.hidden_states[early_exit_layer])  # (B, L, V)
     #             logits_dict[early_exit_layer] = logits

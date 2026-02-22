@@ -759,7 +759,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
         cache_position: Optional[torch.LongTensor] = None,
         logits_to_keep: Union[int, torch.Tensor] = 0,
 
-        # === New: activation capture knobs (仿照你的参考实现接口命名) ===
+        # New: activation capture knobs (仿照你的参考实现接口命名) ===
         return_hidden_scores: bool = False,
         # ======== neuron selection / early exit controls ========
         early_exit_layers: Optional[List[int]] = None,
@@ -930,7 +930,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
             activate_keys_o = {}
             no_use_layer_index = []
 
-            # 1) 按层聚合分数，构造 combined_data（与示例相同的权重 3:2:2）
+            # 1) Aggregate scores by layer，构造 combined_data（与示例相同的权重 3:2:2）
             #    这里用 np.sum 以兼容 list/ndarray
             summed_data_fwd = {k: float(np.sum(v)) for k, v in hidden_scores_fwd_up.items()}
             summed_data_q = {k: float(np.sum(v)) for k, v in hidden_scores_q.items()}
@@ -947,7 +947,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
                     return np.empty((0,), dtype=int)
                 a = np.asarray(arr)
                 n = min(n, a.shape[0])
-                # np.argsort 从小到大，取最后 n 个并反转实现降序
+                # np.argsort ascending，取最后 n 个并反转实现降序
                 return np.argsort(a)[-n:][::-1]
 
             # （可选）阈值选取工具，与你的“select_indices”一致，默认未启用
@@ -959,19 +959,19 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
                 return np.where(a >= thr)[0]
 
             for early_layer in early_exit_layers:
-                # 2) 该层的 per-layer logits（若未保留 hidden_states，回退到最后一层）
+                # 2) Per-layer logits for this layer（若未保留 hidden_states，回退到最后一层）
                 if outputs.hidden_states is None or early_layer >= len(outputs.hidden_states):
                     layer_h = outputs.last_hidden_state
                 else:
                     layer_h = outputs.hidden_states[early_layer]
                 logits_dict[early_layer] = self.lm_head(layer_h)
 
-                # 3) 计算每类激活的 Top-N 数目（保持与你示例一致的来源）
+                # 3) Compute Top-N counts per activation type（保持与你示例一致的来源）
                 top_number_attn = int(top_ratio_atten * len(hidden_scores_fwd_up[early_layer]))
                 top_number_ffn = int(top_ratio_ffn * len(hidden_scores_q[early_layer]))
-                top_number_layer = 10  # 用于 no_use_layer_index 的层数上限
+                top_number_layer = 10  # Layer limit for no_use_layer_index 的层数上限
 
-                # 4) 各字典取 Top-N 索引（降序）
+                # 4) Take Top-N indices from each dict（降序）
                 activate_keys_fwd_up[early_layer] = _topn(hidden_scores_fwd_up[early_layer], top_number_ffn)
                 activate_keys_fwd_down[early_layer] = _topn(hidden_scores_fwd_down[early_layer], top_number_ffn)
                 activate_keys_q[early_layer] = _topn(hidden_scores_q[early_layer], top_number_attn)
@@ -979,7 +979,7 @@ class LlavaNextForConditionalGeneration(LlavaNextPreTrainedModel, GenerationMixi
                 activate_keys_v[early_layer] = _topn(hidden_scores_v[early_layer], top_number_attn)
                 activate_keys_o[early_layer] = _topn(hidden_scores_o[early_layer], top_number_attn)
 
-            # 5) 选出 no_use_layer_index（与示例相同：按 combined_data 升序排序后取最后 N 个）
+            # 5) Select no_use_layer_index（与示例相同：按 combined_data 升序排序后取最后 N 个）
             sorted_items = sorted(combined_data.items(), key=lambda item: item[1])
             no_use_layer_index = [item[0] for item in sorted_items[-top_number_layer:]]
             return (

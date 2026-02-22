@@ -307,19 +307,19 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
         return streamer
 
-    # === NEURON: generate 扩展，支持在生成前先跑一遍 text_model 拿 neuron 统计，并随结果一起返回 ===
+    # NEURON: generate extension，支持在生成前先跑一遍 text_model 拿 neuron 统计，并随结果一起返回 ===
     def generate(
         self,
         model_inputs,
         tokenizer=None,
         vision_hidden_states=None,
         stream=False,
-        early_exit_layers: Optional[List[int]] = None,   # 新增
-        return_hidden_scores: bool = False,               # 新增
+        early_exit_layers: Optional[List[int]] = None,   # New param
+        return_hidden_scores: bool = False,               # New param
         **kwargs
     ):
         """
-        返回：
+        Returns:
           - 当未请求 hidden scores：与原来一致，返回生成结果 (ids 或文本 / 或 streamer)。
           - 当请求 hidden scores：
               * stream=False -> 返回 (result, hidden_scores_dict)
@@ -353,7 +353,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             vision_hidden_states,
         ) = self.get_vllm_embedding(model_inputs)
 
-        # === NEURON: 若需要统计，先跑一次 forward（text_model 分支），拿到 hidden scores ===
+        # NEURON: If stats needed，先跑一次 forward（text_model 分支），拿到 hidden scores ===
         hidden_scores = None
         if return_hidden_scores or (early_exit_layers is not None):
             outputs_and_scores = self.forward(
@@ -387,7 +387,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                 whether_reason_fwd=kwargs.get("whether_reason_fwd", None),
                 whether_gen_fwd=kwargs.get("whether_gen_fwd", None),
             )
-            # 解析七元组
+            # Parse 7-tuple
             if isinstance(outputs_and_scores, tuple) and len(outputs_and_scores) == 7:
                 _outputs, fwd_up, fwd_down, q, k, v, o = outputs_and_scores
                 hidden_scores = {
@@ -401,7 +401,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             else:
                 hidden_scores = {"fwd_up": {}, "fwd_down": {}, "q": {}, "k": {}, "v": {}, "o": {}}
 
-        # === 正常 decode / 或流式 ===
+        # Normal decode / 或流式 ===
         if stream:
             kwargs.pop("decode_text", None)
             res = self._decode_stream(input_embeds, tokenizer, **kwargs)
@@ -410,7 +410,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             res = self._decode(input_embeds, tokenizer, **kwargs)
             return (res, hidden_scores) if hidden_scores is not None else res
 
-    # === NEURON: chat 扩展，支持把 hidden scores 一并返回 ===
+    # NEURON: chat extension，支持把 hidden scores 一并返回 ===
     def chat(
             self,
             image,
@@ -423,7 +423,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
             max_inp_length=2048,
             system_prompt='',
             stream=False,
-            # 新增：neuron 相关参数（直传到 generate / forward）
+            # New param：neuron 相关参数（直传到 generate / forward）
             early_exit_layers: Optional[List[int]] = None,
             return_hidden_scores: bool = False,
             **kwargs
@@ -491,14 +491,14 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                 vision_hidden_states=vision_hidden_states,
                 stream=stream,
                 decode_text=True,
-                early_exit_layers=early_exit_layers,         # === 透传 ===
-                return_hidden_scores=return_hidden_scores,   # === 透传 ===
+                early_exit_layers=early_exit_layers,         # Pass through
+                return_hidden_scores=return_hidden_scores,   # Pass through
                 **generation_config
             )
 
-        # 根据是否请求 hidden scores、是否流式，组织返回
+        # Based on hidden_scores request、是否流式，组织返回
         if stream:
-            # res 可能是 streamer 或 (streamer, hidden_scores)
+            # res may be streamer or (streamer, hidden_scores)
             if isinstance(res, tuple):
                 streamer, hidden_scores = res
 
@@ -507,7 +507,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
                         text = text.replace(tokenizer.eot_token, '').replace(tokenizer.eos_token, '')
                         yield text
 
-                # 返回 (生成器, hidden_scores)
+                # Return (generator, hidden_scores)
                 return stream_gen(), hidden_scores
             else:
                 def stream_gen():
@@ -517,7 +517,7 @@ class MiniCPMV(MiniCPMVPreTrainedModel):
 
                 return stream_gen()
         else:
-            # res 可能是 文本 或 (文本, hidden_scores)
+            # res may be text or (文本, hidden_scores)
             if isinstance(res, tuple):
                 answer, hidden_scores = res
                 return answer[0], hidden_scores  # decode_text=True -> list[str]，取第一个 batch

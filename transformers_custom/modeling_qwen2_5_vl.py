@@ -2223,7 +2223,7 @@ class Qwen2_5_VLForConditionalGeneration(GenerationMixinCustom, Qwen2_5_VLPreTra
             layer_score_q = {k: _vec_to_scalar(v, "sum") for k, v in summed_data_q.items()}
             layer_score_v = {k: _vec_to_scalar(v, "sum") for k, v in summed_data_v.items()}
 
-            # 2) 现在才能做线性组合（都是标量了，不会再广播失败）
+            # 2) Linear combination (all scalars now, no broadcast issues)
             combined_layer_score = {
                 k: layer_score_fwd[k] * 3 + layer_score_q[k] * 2 + layer_score_v[k] * 2
                 for k in layer_score_fwd.keys()
@@ -2234,12 +2234,12 @@ class Qwen2_5_VLForConditionalGeneration(GenerationMixinCustom, Qwen2_5_VLPreTra
             sorted_items = sorted(combined_layer_score.items(), key=lambda item: item[1])
             no_use_layer_index = [item[0] for item in sorted_items[-top_number_layer:]]
 
-            # 4) 选各模块的神经元/头：仍然用各自模块的向量来 argsort（不用做维度对齐）
+            # 4) Select neurons/heads per module: argsort by module vectors (no dim alignment)
             for i, early_exit_layer in enumerate(early_exit_layers):
                 logits = self.lm_head(outputs.hidden_states[early_exit_layer])
                 logits_dict[early_exit_layer] = logits
 
-                # 用各自向量长度计算 top 数；防止 0
+                # Compute top count from vector length; avoid 0
                 fwd_len = int(np.size(summed_data_fwd[early_exit_layer]))
                 attn_len = int(np.size(summed_data_q[early_exit_layer]))
                 top_number_ffn = max(1, int(top_ratio_ffn * fwd_len))
