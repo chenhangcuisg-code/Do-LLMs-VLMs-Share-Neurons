@@ -237,3 +237,61 @@ The `transformers_custom` package contains lightly modified or extended versions
 
 These files are mostly standard or minimally adapted from upstream Transformers and therefore use English comments by default.
 You can treat them as drop-in replacements for the corresponding Hugging Face modules when using the models in this submission.
+
+## 5. Evaluation (`lmms-eval/`)
+
+This repository includes a pinned copy of [lmms-eval](https://github.com/EvolvingLMMs-Lab/lmms-eval) at commit `c4a3128` (v0.3.4, 2025-05-31), which is the version used for all benchmark results reported in the paper.
+
+### Install
+
+```bash
+pip install -e lmms-eval/
+pip install qwen-vl-utils accelerate decord python-Levenshtein openai
+```
+
+> **Note:** `transformers >= 4.49` is required for Qwen2.5-VL models.
+
+### Run evaluation (e.g. MME on a merged model)
+
+```bash
+cd lmms-eval
+
+CUDA_VISIBLE_DEVICES=0 python -m lmms_eval \
+  --model qwen2_5_vl \
+  --model_args pretrained=/path/to/merged_model,attn_implementation=sdpa \
+  --tasks mme \
+  --batch_size 1 \
+  --log_samples \
+  --output_path ./logs/eval_results
+```
+
+### Run evaluation on MathVista (CoT / Format / Solution)
+
+```bash
+OPENAI_API_KEY=your_key CUDA_VISIBLE_DEVICES=0 python -m lmms_eval \
+  --model qwen2_5_vl \
+  --model_args pretrained=/path/to/merged_model,attn_implementation=sdpa \
+  --tasks mathvista_testmini_cot,mathvista_testmini_format,mathvista_testmini_solution \
+  --batch_size 1 \
+  --log_samples \
+  --output_path ./logs/eval_results
+```
+
+### Benchmark settings used in the paper
+
+| Benchmark | Task name(s) | Notes |
+|-----------|-------------|-------|
+| MME | `mme` | Reports `mme_perception_score` |
+| MathVista | `mathvista_testmini_cot`, `mathvista_testmini_format`, `mathvista_testmini_solution` | GPT judge via `OPENAI_API_KEY`; paper used GPT-3.5-turbo (default in this lmms-eval version) |
+| POPE | `pope` | |
+| ScienceQA | `scienceqa_img` | |
+| MMMU | `mmmu_val` | |
+| MMMU-Pro (Vision) | `mmmu_pro_vision` | |
+
+### Verified reproduction results (Qwen2.5-VL-7B + Math-7B, lora rank=4 β=0.5)
+
+| Model | MME perception |
+|-------|---------------|
+| Qwen2.5-VL-7B-Instruct (baseline) | 1692 |
+| Merged (this repo) | **1712** |
+| Paper claim | 1681 / 1713 |

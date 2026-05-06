@@ -257,7 +257,7 @@ def merge_with_lora(
     # Step-1: full-matrix low-rank deltas
     DeltaA_r = _rank_trunc_svd(W_a - W_base, rank)
     DeltaB_r = _rank_trunc_svd(W_b - W_base, rank)
-    DeltaM =   1 * DeltaB_r
+    DeltaM = beta * DeltaA_r + (1 - beta) * DeltaB_r
 
     # Step-2: selective in-place update
     device = W_base.device
