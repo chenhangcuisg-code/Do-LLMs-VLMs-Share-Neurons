@@ -664,8 +664,10 @@ def evaluate(
         lm.accelerator.wait_for_everyone()
     elif distributed_executor_backend == "torchrun":
         dist.barrier()
-    else:
-        raise ValueError(f"Invalid distributed_executor_backend: {distributed_executor_backend}. Choose either 'accelerate' or 'torchrun'.")
+    # else: single-GPU inference — no barrier needed.
+    # Note: hasattr(lm, "accelerator") is False for models that don't store self.accelerator
+    # (e.g. qwen2_5_vl at c4a3128), causing this else-branch to be hit even when backend
+    # is "accelerate". Raising here is a false error; just skip the barrier.
 
     return results_dict
 
