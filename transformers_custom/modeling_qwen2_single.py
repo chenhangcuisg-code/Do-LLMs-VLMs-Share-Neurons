@@ -1362,8 +1362,10 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
                 logits = self.lm_head(outputs.hidden_states[early_exit_layer])
                 logits_dict[early_exit_layer] = logits
 
-                top_number_attn = int(top_ratio_atten * len(hidden_scores_fwd_up[early_exit_layer]))
-                top_number_ffn = int(top_ratio_ffn * len(hidden_scores_q[early_exit_layer]))
+                # FIX: variables were swapped — top_number_attn used FFN dim (18944) and top_number_ffn used attn dim (3584).
+                # That made attn selection accidentally take top-1894 (huge) and FFN selection top-358 (tiny), opposite of intent.
+                top_number_attn = int(top_ratio_atten * len(hidden_scores_q[early_exit_layer]))
+                top_number_ffn  = int(top_ratio_ffn  * len(hidden_scores_fwd_up[early_exit_layer]))
                 top_number_layer = 10
 
                 #pdb.set_trace()

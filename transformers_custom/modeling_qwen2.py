@@ -1185,12 +1185,26 @@ class Qwen2ForCausalLM(GenerationMixinCustom, Qwen2PreTrainedModel):
                 if (ffn_number or top_ratio_ffn) and k_ffn == 0 and ffn_dim > 0: k_ffn = 1
                 if (atten_number or top_ratio_atten) and k_attn == 0 and attn_dim > 0: k_attn = 1
 
-                activate_keys_fwd_up[early_exit_layer] = _topk_per_batch(vec_fwd_up_bn[early_exit_layer], k_ffn)
-                activate_keys_fwd_down[early_exit_layer] = _topk_per_batch(vec_fwd_down_bn[early_exit_layer], k_ffn)
-                activate_keys_q[early_exit_layer] = _topk_per_batch(vec_q_bn[early_exit_layer], k_attn)
-                activate_keys_k[early_exit_layer] = _topk_per_batch(vec_k_bn[early_exit_layer], k_attn)
-                activate_keys_v[early_exit_layer] = _topk_per_batch(vec_v_bn[early_exit_layer], k_attn)
-                activate_keys_o[early_exit_layer] = _topk_per_batch(vec_o_bn[early_exit_layer], k_attn)
+                # FIX: collapse batch dim and return 1D (K,) indices, matching modeling_qwen2_5_vl.py.
+                # The previous _topk_per_batch produced (B, K) arrays, which broke per-sample
+                # aggregation in detect_mm_add_new.py: set(2D_ndarray) iterates over rows,
+                # yielding a 1-element set instead of K index-elements, so set.intersection
+                # across samples returned a near-empty result and detection JSONs were sparse.
+                def _topk_1d(scores_bn, k):
+                    import numpy as _np
+                    vec = scores_bn.sum(axis=0) if (hasattr(scores_bn, "ndim") and scores_bn.ndim == 2) else scores_bn
+                    N = int(vec.shape[0])
+                    if k is None or k <= 0 or N == 0:
+                        return _np.zeros((0,), dtype=_np.int64)
+                    k = min(k, N)
+                    return _np.argsort(vec)[-k:][::-1].astype(_np.int64)
+
+                activate_keys_fwd_up[early_exit_layer]   = _topk_1d(vec_fwd_up_bn[early_exit_layer],   k_ffn)
+                activate_keys_fwd_down[early_exit_layer] = _topk_1d(vec_fwd_down_bn[early_exit_layer], k_ffn)
+                activate_keys_q[early_exit_layer]        = _topk_1d(vec_q_bn[early_exit_layer],        k_attn)
+                activate_keys_k[early_exit_layer]        = _topk_1d(vec_k_bn[early_exit_layer],        k_attn)
+                activate_keys_v[early_exit_layer]        = _topk_1d(vec_v_bn[early_exit_layer],        k_attn)
+                activate_keys_o[early_exit_layer]        = _topk_1d(vec_o_bn[early_exit_layer],        k_attn)
 
             top_number_layer = 10
             sorted_items = sorted(combined_data.items(), key=lambda item: item[1])

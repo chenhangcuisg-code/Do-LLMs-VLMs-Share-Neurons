@@ -1097,8 +1097,9 @@ class LlamaForCausalLMDetect(GenerationMixinCustom, LlamaPreTrainedModel):
                 logits = self.lm_head(outputs.hidden_states[early_exit_layer])
                 logits_dict[early_exit_layer] = logits
 
-                top_number_attn = int(top_ratio_atten * len(hidden_scores_fwd_up[early_exit_layer]))
-                top_number_ffn = int(top_ratio_ffn * len(hidden_scores_q[early_exit_layer]))
+                # FIX: swapped — see modeling_qwen2_5_vl.py for the canonical (correct) version.
+                top_number_attn = int(top_ratio_atten * len(hidden_scores_q[early_exit_layer]))
+                top_number_ffn  = int(top_ratio_ffn  * len(hidden_scores_fwd_up[early_exit_layer]))
                 top_number_layer = 10
                 
                 #pdb.set_trace() 
